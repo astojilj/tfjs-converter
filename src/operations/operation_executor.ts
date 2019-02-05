@@ -27,6 +27,7 @@ import * as convolution from './executors/convolution_executor';
 import * as creation from './executors/creation_executor';
 import * as dynamic from './executors/dynamic_executor';
 import * as evaluation from './executors/evaluation_executor';
+import * as fused from './executors/fused_executor';
 import * as graph from './executors/graph_executor';
 import * as image from './executors/image_executor';
 import * as logical from './executors/logical_executor';
@@ -79,6 +80,8 @@ export function executeOp(
       return spectral.executeOp(node, tensorMap, context);
     case 'transformation':
       return transformation.executeOp(node, tensorMap, context);
+    case 'fused':
+      return fused.executeOp(node, tensorMap, context);
     default:
       throw TypeError(`Node type ${node.op} is not implemented`);
   }

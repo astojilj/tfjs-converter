@@ -15,7 +15,8 @@
  * =============================================================================
  */
 
-import {DataType, Tensor, tidy, util} from '@tensorflow/tfjs-core';
+import {DataType, ENV, Tensor, tidy, util} from '@tensorflow/tfjs-core';
+import {assert} from '@tensorflow/tfjs-core/dist/util';
 
 // tslint:disable-next-line:max-line-length
 import {NamedTensorMap, NamedTensorsMap, TensorArrayMap, TensorInfo} from '../data/types';
@@ -129,7 +130,56 @@ export class GraphExecutor {
         }
       });
     }
-    this.compiledMap.set(nameKey, compiledOrder);
+    this.compiledMap.set(nameKey, this.fuseNodes(compiledOrder));
+  }
+
+  private fuseNodes(nodes: Node[]): Node[] {
+    if (!ENV.get('USE_FUSED')) {
+      return nodes;
+    }
+    const fused = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (node.children.length !== 1) {
+        continue;
+      }
+      const child = node.children[0];
+      if (child.children.length !== 1) {
+        continue;
+      }
+      const gc = child.children[0];
+      if (node.op === 'conv2d' && child.op === 'add' &&
+          gc.op === 'clipByValue' && gc.params['clipValueMin'].value === 0 &&
+          gc.params['clipValueMax'].value === 6) {
+        node.op = 'conv2dAddActivate';
+        node.category = 'fused';
+        fused.push(child);
+        fused.push(gc);
+        node.children = gc.children;
+        gc.children.forEach((childNode) => {
+          for (let i = 0; i < childNode.inputNames.length; i++) {
+            if (childNode.inputNames[i] === gc.name) {
+              childNode.inputNames[i] = node.name;
+              childNode.inputs[i] = node;
+              return;
+            }
+          }
+          assert(false, 'Shouldn\'t get reached');
+        });
+        // Copy add parameter (conv2D output is the first param in add):
+        const addParam = child.inputNames[0] === node.name ? 1 : 0;
+        node.inputs.push(child.inputs[addParam]);
+        node.inputNames.push(child.inputNames[addParam]);
+        node.params['addParam'] = child.params[addParam === 0 ? 'a' : 'b'];
+        node.params['addParam'].inputIndex = node.inputs.length - 1;
+        // Activation type:
+        node.params['activation'] = {type: 'string', value: 'relu6'};
+      }
+    }
+    fused.forEach((node) => {
+      nodes.splice(nodes.indexOf(node), 1);
+    });
+    return nodes;
   }
 
   /**
