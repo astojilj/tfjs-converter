@@ -144,21 +144,31 @@ export class GraphExecutor {
         continue;
       }
       const child = node.children[0];
-      if (child.children.length !== 1) {
-        continue;
-      }
-      const gc = child.children[0];
-      if (node.op === 'conv2d' && child.op === 'add' &&
-          gc.op === 'clipByValue' && gc.params['clipValueMin'].value === 0 &&
-          gc.params['clipValueMax'].value === 6) {
+      if (node.op === 'conv2d' && child.op === 'add') {
+        const gc = child.children.length === 1 ? child.children[0] : null;
         node.op = 'conv2dAddActivate';
         node.category = 'fused';
         fused.push(child);
-        fused.push(gc);
-        node.children = gc.children;
-        gc.children.forEach((childNode) => {
+        // Copy add parameter (conv2D output is the first param in add):
+        const addParam = child.inputNames[0] === node.name ? 1 : 0;
+        node.inputs.push(child.inputs[addParam]);
+        node.inputNames.push(child.inputNames[addParam]);
+        node.params['addParam'] = child.params[addParam === 0 ? 'a' : 'b'];
+        node.params['addParam'].inputIndex = node.inputs.length - 1;
+        // Sequence of nodes from node to tail gets replaced by fused node.
+        let tail = child;
+        if (!!gc && gc.op === 'clipByValue' &&
+            gc.params['clipValueMin'].value === 0 &&
+            gc.params['clipValueMax'].value === 6) {
+          tail = gc;
+          fused.push(gc);
+          // Activation type:
+          node.params['activation'] = {type: 'string', value: 'relu6'};
+        }
+        node.children = tail.children;
+        tail.children.forEach((childNode) => {
           for (let i = 0; i < childNode.inputNames.length; i++) {
-            if (childNode.inputNames[i] === gc.name) {
+            if (childNode.inputNames[i] === tail.name) {
               childNode.inputNames[i] = node.name;
               childNode.inputs[i] = node;
               return;
@@ -166,14 +176,6 @@ export class GraphExecutor {
           }
           assert(false, 'Shouldn\'t get reached');
         });
-        // Copy add parameter (conv2D output is the first param in add):
-        const addParam = child.inputNames[0] === node.name ? 1 : 0;
-        node.inputs.push(child.inputs[addParam]);
-        node.inputNames.push(child.inputNames[addParam]);
-        node.params['addParam'] = child.params[addParam === 0 ? 'a' : 'b'];
-        node.params['addParam'].inputIndex = node.inputs.length - 1;
-        // Activation type:
-        node.params['activation'] = {type: 'string', value: 'relu6'};
       }
     }
     fused.forEach((node) => {
